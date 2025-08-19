@@ -1,0 +1,7 @@
+/radius-go
+/data/
+/logs/
+config.yaml
+*.db
+*.db-shm
+*.db-wal

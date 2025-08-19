@@ -1,0 +1,23 @@
+server:
+  api_addr: ":8080"
+  radius_addr: ":1812"
+
+database:
+  path: "data/radius-go.db"
+
+logging:
+  level: "info"
+  file: "logs/radius-go.log"
+  rotate_daily: true
+  max_size_mb: 100
+  max_backups: 14
+  max_age_days: 30
+  compress: true
+
+security:
+  bcrypt_cost: 12
+
+clients:
+  - name: "local-test-client"
+    network: "127.0.0.1/32"
+    secret: "replace-with-a-long-random-shared-secret"
