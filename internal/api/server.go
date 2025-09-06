@@ -2,6 +2,8 @@ package api
 
 import (
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +17,10 @@ import (
 )
 
 const apiKeyContextKey = "api_key_id"
+
+type RouterConfig struct {
+	AllowedSources []string
+}
 
 type userResponse struct {
 	ID        int64  `json:"id"`
@@ -33,12 +39,17 @@ type apiKeyResponse struct {
 	UpdatedAt  string  `json:"updated_at"`
 }
 
-func NewRouter(st *store.Store, logger *zap.Logger) *gin.Engine {
+func NewRouter(st *store.Store, logger *zap.Logger, cfg RouterConfig) (*gin.Engine, error) {
 	gin.SetMode(gin.ReleaseMode)
+
+	sourceAllowlist, err := newSourceAllowlist(cfg.AllowedSources)
+	if err != nil {
+		return nil, err
+	}
 
 	router := gin.New()
 	router.HandleMethodNotAllowed = true
-	router.Use(recovery(logger), requestLogger(logger), apiKeyMiddleware(st, logger))
+	router.Use(recovery(logger), requestLogger(logger), sourceAllowlistMiddleware(sourceAllowlist, logger), apiKeyMiddleware(st, logger))
 
 	api := router.Group("/api")
 	api.GET("/health", func(c *gin.Context) {
@@ -59,7 +70,89 @@ func NewRouter(st *store.Store, logger *zap.Logger) *gin.Engine {
 	router.NoMethod(func(c *gin.Context) {
 		c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "method_not_allowed"})
 	})
-	return router
+	return router, nil
+}
+
+type sourceAllowlist struct {
+	networks []*net.IPNet
+}
+
+func newSourceAllowlist(entries []string) (*sourceAllowlist, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	allowlist := &sourceAllowlist{networks: make([]*net.IPNet, 0, len(entries))}
+	for i, entry := range entries {
+		network, err := parseSourceEntry(entry)
+		if err != nil {
+			return nil, fmt.Errorf("parse allowed API source %d: %w", i, err)
+		}
+		allowlist.networks = append(allowlist.networks, network)
+	}
+	return allowlist, nil
+}
+
+func parseSourceEntry(entry string) (*net.IPNet, error) {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return nil, errors.New("source is empty")
+	}
+	if ip := net.ParseIP(entry); ip != nil {
+		bits := 128
+		if ip.To4() != nil {
+			ip = ip.To4()
+			bits = 32
+		}
+		return &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)}, nil
+	}
+	_, network, err := net.ParseCIDR(entry)
+	if err != nil {
+		return nil, err
+	}
+	if ipv4 := network.IP.To4(); ipv4 != nil {
+		network.IP = ipv4
+	}
+	return network, nil
+}
+
+func sourceAllowlistMiddleware(allowlist *sourceAllowlist, logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if allowlist == nil || !isAPIPath(c.Request.URL.Path) {
+			c.Next()
+			return
+		}
+		ip, ok := remoteIP(c.Request.RemoteAddr)
+		if !ok || !allowlist.allows(ip) {
+			logger.Warn("Rejected API request from unauthorized source", zap.String("remote_addr", c.Request.RemoteAddr), zap.String("path", c.Request.URL.Path))
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "source_forbidden"})
+			return
+		}
+		c.Next()
+	}
+}
+
+func remoteIP(remoteAddr string) (net.IP, bool) {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil {
+		return nil, false
+	}
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return ipv4, true
+	}
+	return ip, true
+}
+
+func (a *sourceAllowlist) allows(ip net.IP) bool {
+	for _, network := range a.networks {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func apiKeyMiddleware(st *store.Store, logger *zap.Logger) gin.HandlerFunc {

@@ -20,7 +20,7 @@ func TestAPIRequiresAPIKeyAndUserLifecycle(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
 	rootKey := createTestAPIKey(t, st, "root")
-	router := NewRouter(st, zap.NewNop())
+	router := newTestRouter(t, st, RouterConfig{})
 
 	resp := performJSON(router, http.MethodGet, "/api/health", "", nil)
 	if resp.Code != http.StatusUnauthorized {
@@ -99,7 +99,7 @@ func TestAPIRequiresAPIKeyAndUserLifecycle(t *testing.T) {
 func TestAPIKeyLifecycle(t *testing.T) {
 	st := newTestStore(t)
 	rootKey := createTestAPIKey(t, st, "root")
-	router := NewRouter(st, zap.NewNop())
+	router := newTestRouter(t, st, RouterConfig{})
 
 	resp := performJSON(router, http.MethodPost, "/api/api-keys", rootKey, map[string]string{"name": "operator"})
 	if resp.Code != http.StatusCreated {
@@ -144,6 +144,38 @@ func TestAPIKeyLifecycle(t *testing.T) {
 	}
 }
 
+func TestAPISourceAllowlist(t *testing.T) {
+	st := newTestStore(t)
+	rootKey := createTestAPIKey(t, st, "root")
+	router := newTestRouter(t, st, RouterConfig{
+		AllowedSources: []string{"203.0.113.10", "198.51.100.99/24"},
+	})
+
+	resp := performJSONFrom(router, http.MethodGet, "/api/health", rootKey, nil, "203.0.113.10:12345")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected exact source IP to be allowed, got %d", resp.Code)
+	}
+
+	resp = performJSONFrom(router, http.MethodGet, "/api/health", rootKey, nil, "198.51.100.25:12345")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected source CIDR to be allowed, got %d", resp.Code)
+	}
+
+	resp = performJSONFrom(router, http.MethodGet, "/api/health", rootKey, nil, "192.0.2.10:12345")
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("expected source outside allowlist to be forbidden, got %d", resp.Code)
+	}
+
+	req := newJSONRequest(http.MethodGet, "/api/health", rootKey, nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	req.Header.Set("X-Forwarded-For", "203.0.113.10")
+	resp = httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("expected spoofed forwarded source to be ignored, got %d", resp.Code)
+	}
+}
+
 func newTestStore(t *testing.T) *store.Store {
 	t.Helper()
 	st, _, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "radius-go-test.db"), bcrypt.MinCost)
@@ -167,7 +199,30 @@ func createTestAPIKey(t *testing.T, st *store.Store, name string) string {
 	return created.Key
 }
 
+func newTestRouter(t *testing.T, st *store.Store, cfg RouterConfig) http.Handler {
+	t.Helper()
+	router, err := NewRouter(st, zap.NewNop(), cfg)
+	if err != nil {
+		t.Fatalf("create test router: %v", err)
+	}
+	return router
+}
+
 func performJSON(router http.Handler, method, path, apiKey string, body any) *httptest.ResponseRecorder {
+	return performJSONFrom(router, method, path, apiKey, body, "")
+}
+
+func performJSONFrom(router http.Handler, method, path, apiKey string, body any, remoteAddr string) *httptest.ResponseRecorder {
+	req := newJSONRequest(method, path, apiKey, body)
+	if remoteAddr != "" {
+		req.RemoteAddr = remoteAddr
+	}
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	return resp
+}
+
+func newJSONRequest(method, path, apiKey string, body any) *http.Request {
 	var requestBody bytes.Buffer
 	if body != nil {
 		_ = json.NewEncoder(&requestBody).Encode(body)
@@ -179,9 +234,7 @@ func performJSON(router http.Handler, method, path, apiKey string, body any) *ht
 	if apiKey != "" {
 		req.Header.Set("X-API-Key", apiKey)
 	}
-	resp := httptest.NewRecorder()
-	router.ServeHTTP(resp, req)
-	return resp
+	return req
 }
 
 func itoa(id int64) string {

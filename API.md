@@ -14,6 +14,14 @@ Unauthorized or missing API keys return:
 }
 ```
 
+If `api.allowed_sources` is configured, the direct TCP peer IP must match one of the configured IP addresses or CIDR ranges. Requests from other sources return:
+
+```json
+{
+  "error": "source_forbidden"
+}
+```
+
 All request and response bodies use JSON unless the endpoint returns `204 No Content`.
 
 ## Health Check
@@ -252,4 +260,4 @@ Errors use a stable machine-readable `error` string:
 }
 ```
 
-Common values include `unauthorized`, `invalid_json`, `not_found`, `already_exists`, `last_active_api_key`, `method_not_allowed`, and `internal_error`.
+Common values include `unauthorized`, `source_forbidden`, `invalid_json`, `not_found`, `already_exists`, `last_active_api_key`, `method_not_allowed`, and `internal_error`.

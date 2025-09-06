@@ -12,6 +12,7 @@ import (
 
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
+	API      APIConfig      `yaml:"api"`
 	Database DatabaseConfig `yaml:"database"`
 	Logging  LoggingConfig  `yaml:"logging"`
 	Security SecurityConfig `yaml:"security"`
@@ -21,6 +22,10 @@ type Config struct {
 type ServerConfig struct {
 	APIAddr    string `yaml:"api_addr"`
 	RadiusAddr string `yaml:"radius_addr"`
+}
+
+type APIConfig struct {
+	AllowedSources []string `yaml:"allowed_sources"`
 }
 
 type DatabaseConfig struct {
@@ -106,6 +111,11 @@ func (c Config) Validate() error {
 	if c.Security.BcryptCost < bcrypt.MinCost || c.Security.BcryptCost > bcrypt.MaxCost {
 		return fmt.Errorf("security.bcrypt_cost must be between %d and %d", bcrypt.MinCost, bcrypt.MaxCost)
 	}
+	for i, source := range c.API.AllowedSources {
+		if err := validateIPOrCIDR(source); err != nil {
+			return fmt.Errorf("api.allowed_sources[%d] must be an IP address or CIDR: %w", i, err)
+		}
+	}
 	if len(c.Clients) == 0 {
 		return fmt.Errorf("at least one RADIUS client must be configured")
 	}
@@ -128,6 +138,20 @@ func (c Config) Validate() error {
 		if len(client.Secret) < 8 {
 			return fmt.Errorf("clients[%d].secret must be at least 8 characters", i)
 		}
+	}
+	return nil
+}
+
+func validateIPOrCIDR(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("value is empty")
+	}
+	if ip := net.ParseIP(value); ip != nil {
+		return nil
+	}
+	if _, _, err := net.ParseCIDR(value); err != nil {
+		return err
 	}
 	return nil
 }

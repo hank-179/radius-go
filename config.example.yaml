@@ -2,6 +2,13 @@ server:
   api_addr: ":8080"
   radius_addr: ":1812"
 
+api:
+  # Leave empty to disable API source protection.
+  allowed_sources: []
+  # Replace with exact IP addresses or CIDR ranges to enable it:
+  #   - "127.0.0.1"
+  #   - "10.0.0.0/8"
+
 database:
   path: "data/radius-go.db"
 

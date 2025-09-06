@@ -64,7 +64,12 @@ func run() error {
 		logger.Warn("Initial API key generated and printed to stdout", zap.Int64("api_key_id", created.APIKey.ID), zap.String("api_key_name", created.APIKey.Name))
 	}
 
-	router := api.NewRouter(st, logger.Named("api"))
+	router, err := api.NewRouter(st, logger.Named("api"), api.RouterConfig{
+		AllowedSources: cfg.API.AllowedSources,
+	})
+	if err != nil {
+		return err
+	}
 	httpServer := &http.Server{
 		Addr:              cfg.Server.APIAddr,
 		Handler:           router,

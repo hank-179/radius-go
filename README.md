@@ -18,6 +18,7 @@ The server stores users and API keys in SQLite, hashes user passwords with bcryp
 - User management API for creating, suspending, deleting, and changing passwords.
 - API key management API for creating, suspending, and deleting API keys.
 - Mandatory `X-API-Key` authentication for every `/api` request.
+- Optional API source allowlist for exact IP addresses or CIDR ranges.
 - SQLite database creation on first startup.
 - One-time bootstrap API key printed when a new database is created.
 - zap logging with lumberjack rotation. Daily rotation is enabled by default.
@@ -25,7 +26,7 @@ The server stores users and API keys in SQLite, hashes user passwords with bcryp
 
 ## Requirements
 
-- Go 1.25.0.
+- Go 1.25.1.
 - SQLite support through `github.com/mattn/go-sqlite3`, which requires CGO.
 
 ## Build
@@ -53,6 +54,9 @@ server:
   api_addr: ":8080"
   radius_addr: ":1812"
 
+api:
+  allowed_sources: []
+
 database:
   path: "data/radius-go.db"
 
@@ -76,6 +80,18 @@ clients:
     network: "198.51.100.0/24"
     secret: "replace-with-a-different-long-random-secret"
 ```
+
+`api.allowed_sources` is optional. Leave it empty to allow API requests from any source that presents a valid API key. Add exact IP addresses or CIDR ranges to enable source protection:
+
+```yaml
+api:
+  allowed_sources:
+    - "127.0.0.1"
+    - "10.0.0.0/8"
+    - "2001:db8:100::/48"
+```
+
+When source protection is enabled, requests outside these ranges receive `403 Forbidden` before API key authentication.
 
 ## Run
 
@@ -105,6 +121,7 @@ After the user is created, a configured RADIUS client can authenticate `alice` w
 ## Security Notes
 
 - Every `/api` route requires `X-API-Key`.
+- API source protection uses the direct TCP peer address, not forwarded headers.
 - API keys are shown only once at creation time.
 - The service prevents suspending or deleting the last active API key.
 - RADIUS requests from unknown client networks are dropped without a response.
