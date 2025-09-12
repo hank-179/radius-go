@@ -19,6 +19,7 @@ The server stores users and API keys in SQLite, hashes user passwords with bcryp
 - API key management API for creating, suspending, and deleting API keys.
 - Mandatory `X-API-Key` authentication for every `/api` request.
 - Optional API source allowlist for exact IP addresses or CIDR ranges.
+- Trusted reverse proxy support for `X-Forwarded-For` and `X-Real-IP`.
 - SQLite database creation on first startup.
 - One-time bootstrap API key printed when a new database is created.
 - zap logging with lumberjack rotation. Daily rotation is enabled by default.
@@ -56,6 +57,7 @@ server:
 
 api:
   allowed_sources: []
+  trusted_proxies: []
 
 database:
   path: "data/radius-go.db"
@@ -93,6 +95,26 @@ api:
 
 When source protection is enabled, requests outside these ranges receive `403 Forbidden` before API key authentication.
 
+If the API is behind Nginx or another reverse proxy, add the proxy IP address or CIDR to `api.trusted_proxies`. Forwarded IP headers are ignored unless the direct TCP peer is trusted.
+
+```yaml
+api:
+  allowed_sources:
+    - "203.0.113.0/24"
+  trusted_proxies:
+    - "127.0.0.1"
+```
+
+Recommended Nginx proxy headers:
+
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+```
+
+When `X-Forwarded-For` contains multiple addresses, radius-go walks the chain from right to left and returns the first address that is not a trusted proxy. This prevents a client from bypassing source protection by spoofing the left-most forwarded address.
+
 ## Run
 
 ```sh
@@ -121,7 +143,7 @@ After the user is created, a configured RADIUS client can authenticate `alice` w
 ## Security Notes
 
 - Every `/api` route requires `X-API-Key`.
-- API source protection uses the direct TCP peer address, not forwarded headers.
+- API source protection uses the resolved client IP. Forwarded headers are trusted only from `api.trusted_proxies`.
 - API keys are shown only once at creation time.
 - The service prevents suspending or deleting the last active API key.
 - RADIUS requests from unknown client networks are dropped without a response.

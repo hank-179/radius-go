@@ -176,6 +176,51 @@ func TestAPISourceAllowlist(t *testing.T) {
 	}
 }
 
+func TestAPISourceAllowlistUsesRealIPFromTrustedProxy(t *testing.T) {
+	st := newTestStore(t)
+	rootKey := createTestAPIKey(t, st, "root")
+	router := newTestRouter(t, st, RouterConfig{
+		AllowedSources: []string{"198.51.100.0/24"},
+		TrustedProxies: []string{"127.0.0.1"},
+	})
+
+	req := newJSONRequest(http.MethodGet, "/api/health", rootKey, nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "198.51.100.25")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected trusted proxy X-Forwarded-For client to be allowed, got %d", resp.Code)
+	}
+
+	req = newJSONRequest(http.MethodGet, "/api/health", rootKey, nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Real-IP", "198.51.100.30")
+	resp = httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected trusted proxy X-Real-IP client to be allowed, got %d", resp.Code)
+	}
+}
+
+func TestAPISourceAllowlistIgnoresSpoofedForwardedChain(t *testing.T) {
+	st := newTestStore(t)
+	rootKey := createTestAPIKey(t, st, "root")
+	router := newTestRouter(t, st, RouterConfig{
+		AllowedSources: []string{"198.51.100.0/24"},
+		TrustedProxies: []string{"127.0.0.1"},
+	})
+
+	req := newJSONRequest(http.MethodGet, "/api/health", rootKey, nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "198.51.100.25, 192.0.2.10")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("expected spoofed left-most X-Forwarded-For value to be ignored, got %d", resp.Code)
+	}
+}
+
 func newTestStore(t *testing.T) *store.Store {
 	t.Helper()
 	st, _, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "radius-go-test.db"), bcrypt.MinCost)

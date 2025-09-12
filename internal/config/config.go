@@ -26,6 +26,7 @@ type ServerConfig struct {
 
 type APIConfig struct {
 	AllowedSources []string `yaml:"allowed_sources"`
+	TrustedProxies []string `yaml:"trusted_proxies"`
 }
 
 type DatabaseConfig struct {
@@ -114,6 +115,11 @@ func (c Config) Validate() error {
 	for i, source := range c.API.AllowedSources {
 		if err := validateIPOrCIDR(source); err != nil {
 			return fmt.Errorf("api.allowed_sources[%d] must be an IP address or CIDR: %w", i, err)
+		}
+	}
+	for i, proxy := range c.API.TrustedProxies {
+		if err := validateIPOrCIDR(proxy); err != nil {
+			return fmt.Errorf("api.trusted_proxies[%d] must be an IP address or CIDR: %w", i, err)
 		}
 	}
 	if len(c.Clients) == 0 {

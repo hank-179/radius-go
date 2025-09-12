@@ -14,13 +14,15 @@ Unauthorized or missing API keys return:
 }
 ```
 
-If `api.allowed_sources` is configured, the direct TCP peer IP must match one of the configured IP addresses or CIDR ranges. Requests from other sources return:
+If `api.allowed_sources` is configured, the resolved client IP must match one of the configured IP addresses or CIDR ranges. Requests from other sources return:
 
 ```json
 {
   "error": "source_forbidden"
 }
 ```
+
+When the API is behind a reverse proxy, configure `api.trusted_proxies` with the proxy IP address or CIDR. radius-go then resolves the client IP from `X-Forwarded-For` or `X-Real-IP`; forwarded headers from untrusted peers are ignored.
 
 All request and response bodies use JSON unless the endpoint returns `204 No Content`.
 

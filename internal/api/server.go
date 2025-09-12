@@ -17,9 +17,11 @@ import (
 )
 
 const apiKeyContextKey = "api_key_id"
+const clientIPContextKey = "client_ip"
 
 type RouterConfig struct {
 	AllowedSources []string
+	TrustedProxies []string
 }
 
 type userResponse struct {
@@ -42,14 +44,19 @@ type apiKeyResponse struct {
 func NewRouter(st *store.Store, logger *zap.Logger, cfg RouterConfig) (*gin.Engine, error) {
 	gin.SetMode(gin.ReleaseMode)
 
-	sourceAllowlist, err := newSourceAllowlist(cfg.AllowedSources)
+	sourceAllowlist, err := newIPAllowlist(cfg.AllowedSources)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("allowed API sources: %w", err)
 	}
+	trustedProxies, err := newIPAllowlist(cfg.TrustedProxies)
+	if err != nil {
+		return nil, fmt.Errorf("trusted API proxies: %w", err)
+	}
+	ipResolver := clientIPResolver{trustedProxies: trustedProxies}
 
 	router := gin.New()
 	router.HandleMethodNotAllowed = true
-	router.Use(recovery(logger), requestLogger(logger), sourceAllowlistMiddleware(sourceAllowlist, logger), apiKeyMiddleware(st, logger))
+	router.Use(recovery(logger), realIPMiddleware(ipResolver), requestLogger(logger), sourceAllowlistMiddleware(sourceAllowlist, logger), apiKeyMiddleware(st, logger))
 
 	api := router.Group("/api")
 	api.GET("/health", func(c *gin.Context) {
@@ -73,19 +80,19 @@ func NewRouter(st *store.Store, logger *zap.Logger, cfg RouterConfig) (*gin.Engi
 	return router, nil
 }
 
-type sourceAllowlist struct {
+type ipAllowlist struct {
 	networks []*net.IPNet
 }
 
-func newSourceAllowlist(entries []string) (*sourceAllowlist, error) {
+func newIPAllowlist(entries []string) (*ipAllowlist, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
-	allowlist := &sourceAllowlist{networks: make([]*net.IPNet, 0, len(entries))}
+	allowlist := &ipAllowlist{networks: make([]*net.IPNet, 0, len(entries))}
 	for i, entry := range entries {
 		network, err := parseSourceEntry(entry)
 		if err != nil {
-			return nil, fmt.Errorf("parse allowed API source %d: %w", i, err)
+			return nil, fmt.Errorf("parse entry %d: %w", i, err)
 		}
 		allowlist.networks = append(allowlist.networks, network)
 	}
@@ -115,15 +122,87 @@ func parseSourceEntry(entry string) (*net.IPNet, error) {
 	return network, nil
 }
 
-func sourceAllowlistMiddleware(allowlist *sourceAllowlist, logger *zap.Logger) gin.HandlerFunc {
+type clientIPResolver struct {
+	trustedProxies *ipAllowlist
+}
+
+func realIPMiddleware(resolver clientIPResolver) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if ip, ok := resolver.resolve(c.Request); ok {
+			c.Set(clientIPContextKey, ip)
+		}
+		c.Next()
+	}
+}
+
+func (r clientIPResolver) resolve(req *http.Request) (net.IP, bool) {
+	peerIP, ok := remoteIP(req.RemoteAddr)
+	if !ok {
+		return nil, false
+	}
+	if r.trustedProxies == nil || !r.trustedProxies.allows(peerIP) {
+		return peerIP, true
+	}
+	if ip, ok := clientIPFromForwardedFor(req.Header.Get("X-Forwarded-For"), r.trustedProxies); ok {
+		return ip, true
+	}
+	if ip, ok := headerIP(req.Header.Get("X-Real-IP")); ok {
+		return ip, true
+	}
+	return peerIP, true
+}
+
+func clientIPFromForwardedFor(value string, trustedProxies *ipAllowlist) (net.IP, bool) {
+	if strings.TrimSpace(value) == "" {
+		return nil, false
+	}
+	parts := strings.Split(value, ",")
+	ips := make([]net.IP, 0, len(parts))
+	for _, part := range parts {
+		ip, ok := headerIP(part)
+		if !ok {
+			return nil, false
+		}
+		ips = append(ips, ip)
+	}
+	if len(ips) == 0 {
+		return nil, false
+	}
+	for i := len(ips) - 1; i >= 0; i-- {
+		if trustedProxies == nil || !trustedProxies.allows(ips[i]) {
+			return ips[i], true
+		}
+	}
+	return ips[0], true
+}
+
+func headerIP(value string) (net.IP, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, false
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		value = host
+	}
+	ip := net.ParseIP(strings.Trim(value, "[]"))
+	if ip == nil {
+		return nil, false
+	}
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return ipv4, true
+	}
+	return ip, true
+}
+
+func sourceAllowlistMiddleware(allowlist *ipAllowlist, logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if allowlist == nil || !isAPIPath(c.Request.URL.Path) {
 			c.Next()
 			return
 		}
-		ip, ok := remoteIP(c.Request.RemoteAddr)
+		ip, ok := requestClientIP(c)
 		if !ok || !allowlist.allows(ip) {
-			logger.Warn("Rejected API request from unauthorized source", zap.String("remote_addr", c.Request.RemoteAddr), zap.String("path", c.Request.URL.Path))
+			logger.Warn("Rejected API request from unauthorized source", zap.String("client_ip", clientIPString(c)), zap.String("remote_addr", c.Request.RemoteAddr), zap.String("path", c.Request.URL.Path))
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "source_forbidden"})
 			return
 		}
@@ -146,13 +225,30 @@ func remoteIP(remoteAddr string) (net.IP, bool) {
 	return ip, true
 }
 
-func (a *sourceAllowlist) allows(ip net.IP) bool {
+func (a *ipAllowlist) allows(ip net.IP) bool {
 	for _, network := range a.networks {
 		if network.Contains(ip) {
 			return true
 		}
 	}
 	return false
+}
+
+func requestClientIP(c *gin.Context) (net.IP, bool) {
+	value, exists := c.Get(clientIPContextKey)
+	if !exists {
+		return remoteIP(c.Request.RemoteAddr)
+	}
+	ip, ok := value.(net.IP)
+	return ip, ok && ip != nil
+}
+
+func clientIPString(c *gin.Context) string {
+	ip, ok := requestClientIP(c)
+	if !ok {
+		return ""
+	}
+	return ip.String()
 }
 
 func apiKeyMiddleware(st *store.Store, logger *zap.Logger) gin.HandlerFunc {
@@ -332,7 +428,8 @@ func requestLogger(logger *zap.Logger) gin.HandlerFunc {
 			zap.String("path", c.Request.URL.Path),
 			zap.Int("status", c.Writer.Status()),
 			zap.Duration("latency", time.Since(start)),
-			zap.String("client_ip", c.ClientIP()),
+			zap.String("client_ip", clientIPString(c)),
+			zap.String("remote_addr", c.Request.RemoteAddr),
 		)
 	}
 }

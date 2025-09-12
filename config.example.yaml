@@ -8,6 +8,11 @@ api:
   # Replace with exact IP addresses or CIDR ranges to enable it:
   #   - "127.0.0.1"
   #   - "10.0.0.0/8"
+  # Add reverse proxy IP addresses or CIDR ranges here to trust
+  # X-Forwarded-For and X-Real-IP from those proxies only.
+  trusted_proxies: []
+  # For example:
+  #   - "127.0.0.1"
 
 database:
   path: "data/radius-go.db"

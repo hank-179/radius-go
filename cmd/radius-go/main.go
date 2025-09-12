@@ -66,6 +66,7 @@ func run() error {
 
 	router, err := api.NewRouter(st, logger.Named("api"), api.RouterConfig{
 		AllowedSources: cfg.API.AllowedSources,
+		TrustedProxies: cfg.API.TrustedProxies,
 	})
 	if err != nil {
 		return err
