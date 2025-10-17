@@ -1,6 +1,6 @@
 module radius-go
 
-go 1.25.2
+go 1.25.3
 
 require (
 	github.com/gin-gonic/gin v1.10.1
