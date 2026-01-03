@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"go.uber.org/zap"
@@ -141,6 +142,99 @@ func TestAPIKeyLifecycle(t *testing.T) {
 	resp = performJSON(router, http.MethodPost, "/api/api-keys/1/suspend", rootKey, nil)
 	if resp.Code != http.StatusConflict {
 		t.Fatalf("expected last active API key protection conflict, got %d", resp.Code)
+	}
+}
+
+func TestListUsersWithPaginationAndSearch(t *testing.T) {
+	st := newTestStore(t)
+	rootKey := createTestAPIKey(t, st, "root")
+	router := newTestRouter(t, st, RouterConfig{})
+
+	for _, username := range []string{"alice", "alicia", "bob"} {
+		resp := performJSON(router, http.MethodPost, "/api/users", rootKey, map[string]string{
+			"username": username,
+			"password": "correct-password",
+		})
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("create user %s: expected %d, got %d: %s", username, http.StatusCreated, resp.Code, resp.Body.String())
+		}
+	}
+
+	resp := performJSON(router, http.MethodGet, "/api/users?page=1&page_size=2", rootKey, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("list users: expected %d, got %d: %s", http.StatusOK, resp.Code, resp.Body.String())
+	}
+	if strings.Contains(resp.Body.String(), "password_hash") {
+		t.Fatalf("list users response must not expose password hashes: %s", resp.Body.String())
+	}
+	var listed struct {
+		Users      []userResponse     `json:"users"`
+		Pagination paginationResponse `json:"pagination"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode listed users: %v", err)
+	}
+	if len(listed.Users) != 2 {
+		t.Fatalf("expected first page to contain 2 users, got %d", len(listed.Users))
+	}
+	if listed.Pagination.Page != 1 || listed.Pagination.PageSize != 2 || listed.Pagination.Total != 3 || listed.Pagination.TotalPages != 2 {
+		t.Fatalf("unexpected user pagination: %+v", listed.Pagination)
+	}
+
+	resp = performJSON(router, http.MethodGet, "/api/users?username=ali&page=1&page_size=10", rootKey, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("search users: expected %d, got %d: %s", http.StatusOK, resp.Code, resp.Body.String())
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode searched users: %v", err)
+	}
+	if listed.Pagination.Total != 2 || len(listed.Users) != 2 {
+		t.Fatalf("expected username search to return 2 users, got total=%d len=%d", listed.Pagination.Total, len(listed.Users))
+	}
+	for _, user := range listed.Users {
+		if !strings.Contains(user.Username, "ali") {
+			t.Fatalf("expected username search result to contain ali, got %q", user.Username)
+		}
+	}
+
+	resp = performJSON(router, http.MethodGet, "/api/users?page_size=101", rootKey, nil)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected oversized page size to be rejected, got %d", resp.Code)
+	}
+}
+
+func TestListAPIKeysWithPagination(t *testing.T) {
+	st := newTestStore(t)
+	rootKey := createTestAPIKey(t, st, "root")
+	router := newTestRouter(t, st, RouterConfig{})
+
+	for _, name := range []string{"operator", "readonly"} {
+		resp := performJSON(router, http.MethodPost, "/api/api-keys", rootKey, map[string]string{"name": name})
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("create api key %s: expected %d, got %d: %s", name, http.StatusCreated, resp.Code, resp.Body.String())
+		}
+	}
+
+	resp := performJSON(router, http.MethodGet, "/api/api-keys?page=1&page_size=2", rootKey, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("list api keys: expected %d, got %d: %s", http.StatusOK, resp.Code, resp.Body.String())
+	}
+	body := resp.Body.String()
+	if strings.Contains(body, "key_hash") || strings.Contains(body, `"key":`) {
+		t.Fatalf("list api keys response must not expose key hashes or plaintext keys: %s", body)
+	}
+	var listed struct {
+		APIKeys    []apiKeyResponse   `json:"api_keys"`
+		Pagination paginationResponse `json:"pagination"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode listed api keys: %v", err)
+	}
+	if len(listed.APIKeys) != 2 {
+		t.Fatalf("expected first page to contain 2 API keys, got %d", len(listed.APIKeys))
+	}
+	if listed.Pagination.Page != 1 || listed.Pagination.PageSize != 2 || listed.Pagination.Total != 3 || listed.Pagination.TotalPages != 2 {
+		t.Fatalf("unexpected API key pagination: %+v", listed.Pagination)
 	}
 }
 

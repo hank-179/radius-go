@@ -51,6 +51,25 @@ type CreatedAPIKey struct {
 	Key    string
 }
 
+type Page struct {
+	Page     int
+	PageSize int
+}
+
+type UserListFilter struct {
+	Username string
+}
+
+type PagedUsers struct {
+	Users []User
+	Total int
+}
+
+type PagedAPIKeys struct {
+	APIKeys []APIKey
+	Total   int
+}
+
 func Open(ctx context.Context, path string, bcryptCost int) (*Store, bool, error) {
 	if bcryptCost < bcrypt.MinCost || bcryptCost > bcrypt.MaxCost {
 		return nil, false, fmt.Errorf("invalid bcrypt cost: %d", bcryptCost)
@@ -170,6 +189,44 @@ WHERE username = ?
 `, username))
 }
 
+func (s *Store) ListUsers(ctx context.Context, filter UserListFilter, page Page) (*PagedUsers, error) {
+	offset := (page.Page - 1) * page.PageSize
+	username := strings.TrimSpace(filter.Username)
+	if username == "" {
+		total, err := countRows(ctx, s.db, "SELECT count(*) FROM users")
+		if err != nil {
+			return nil, err
+		}
+		users, err := queryUsers(ctx, s.db, `
+SELECT id, username, password_hash, disabled, created_at, updated_at
+FROM users
+ORDER BY id ASC
+LIMIT ? OFFSET ?
+`, page.PageSize, offset)
+		if err != nil {
+			return nil, err
+		}
+		return &PagedUsers{Users: users, Total: total}, nil
+	}
+
+	pattern := "%" + escapeLike(username) + "%"
+	total, err := countRows(ctx, s.db, "SELECT count(*) FROM users WHERE username LIKE ? ESCAPE '\\'", pattern)
+	if err != nil {
+		return nil, err
+	}
+	users, err := queryUsers(ctx, s.db, `
+SELECT id, username, password_hash, disabled, created_at, updated_at
+FROM users
+WHERE username LIKE ? ESCAPE '\'
+ORDER BY id ASC
+LIMIT ? OFFSET ?
+`, pattern, page.PageSize, offset)
+	if err != nil {
+		return nil, err
+	}
+	return &PagedUsers{Users: users, Total: total}, nil
+}
+
 func (s *Store) UpdateUserPassword(ctx context.Context, username, password string) (*User, error) {
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), s.bcryptCost)
 	if err != nil {
@@ -268,6 +325,24 @@ SELECT id, name, key_hash, disabled, last_used_at, created_at, updated_at
 FROM api_keys
 WHERE id = ?
 `, id))
+}
+
+func (s *Store) ListAPIKeys(ctx context.Context, page Page) (*PagedAPIKeys, error) {
+	offset := (page.Page - 1) * page.PageSize
+	total, err := countRows(ctx, s.db, "SELECT count(*) FROM api_keys")
+	if err != nil {
+		return nil, err
+	}
+	apiKeys, err := queryAPIKeys(ctx, s.db, `
+SELECT id, name, key_hash, disabled, last_used_at, created_at, updated_at
+FROM api_keys
+ORDER BY id ASC
+LIMIT ? OFFSET ?
+`, page.PageSize, offset)
+	if err != nil {
+		return nil, err
+	}
+	return &PagedAPIKeys{APIKeys: apiKeys, Total: total}, nil
 }
 
 func (s *Store) AuthenticateAPIKey(ctx context.Context, key string) (*APIKey, error) {
@@ -393,6 +468,60 @@ func scanAPIKey(row *sql.Row) (*APIKey, error) {
 	return &apiKey, nil
 }
 
+func queryUsers(ctx context.Context, db *sql.DB, query string, args ...any) ([]User, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []User
+	for rows.Next() {
+		var user User
+		var disabled int
+		if err := rows.Scan(&user.ID, &user.Username, &user.PasswordHash, &disabled, &user.CreatedAt, &user.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan user row: %w", err)
+		}
+		user.Disabled = disabled == 1
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate users: %w", err)
+	}
+	return users, nil
+}
+
+func queryAPIKeys(ctx context.Context, db *sql.DB, query string, args ...any) ([]APIKey, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query api keys: %w", err)
+	}
+	defer rows.Close()
+
+	var apiKeys []APIKey
+	for rows.Next() {
+		var apiKey APIKey
+		var disabled int
+		if err := rows.Scan(&apiKey.ID, &apiKey.Name, &apiKey.KeyHash, &disabled, &apiKey.LastUsedAt, &apiKey.CreatedAt, &apiKey.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan api key row: %w", err)
+		}
+		apiKey.Disabled = disabled == 1
+		apiKeys = append(apiKeys, apiKey)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate api keys: %w", err)
+	}
+	return apiKeys, nil
+}
+
+func countRows(ctx context.Context, db *sql.DB, query string, args ...any) (int, error) {
+	var total int
+	if err := db.QueryRowContext(ctx, query, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("count rows: %w", err)
+	}
+	return total, nil
+}
+
 func apiKeyDisabled(ctx context.Context, tx *sql.Tx, id int64) (bool, error) {
 	var disabled int
 	if err := tx.QueryRowContext(ctx, "SELECT disabled FROM api_keys WHERE id = ?", id).Scan(&disabled); err != nil {
@@ -426,4 +555,9 @@ func requireAffected(res sql.Result) error {
 func isConstraintError(err error) bool {
 	var sqliteErr sqlite3.Error
 	return errors.As(err, &sqliteErr) && sqliteErr.Code == sqlite3.ErrConstraint
+}
+
+func escapeLike(value string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(value)
 }

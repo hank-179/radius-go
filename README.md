@@ -17,6 +17,7 @@ The server stores users and API keys in SQLite, hashes user passwords with bcryp
 - Unknown RADIUS clients are silently dropped.
 - User management API for creating, suspending, deleting, and changing passwords.
 - API key management API for creating, suspending, and deleting API keys.
+- Paginated user and API key listing. User listing supports username search.
 - Mandatory `X-API-Key` authentication for every `/api` request.
 - Optional API source allowlist for exact IP addresses or CIDR ranges.
 - Trusted reverse proxy support for `X-Forwarded-For` and `X-Real-IP`.

@@ -42,6 +42,48 @@ Response `200 OK`:
 }
 ```
 
+## List Users
+
+Returns users with pagination. The response never includes password hashes.
+
+```http
+GET /api/users?page=1&page_size=20&username=ali
+```
+
+Query parameters:
+
+- `page`: optional positive integer. Default is `1`.
+- `page_size`: optional positive integer from `1` to `100`. Default is `20`.
+- `username`: optional partial username search.
+
+Response `200 OK`:
+
+```json
+{
+  "users": [
+    {
+      "id": 1,
+      "username": "alice",
+      "disabled": false,
+      "created_at": "2026-05-28T08:00:00.000Z",
+      "updated_at": "2026-05-28T08:00:00.000Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "page_size": 20,
+    "total": 1,
+    "total_pages": 1
+  }
+}
+```
+
+Possible errors:
+
+- `400 Bad Request`: invalid pagination values or invalid username search.
+- `401 Unauthorized`: missing or invalid API key.
+- `403 Forbidden`: source IP is not allowed when API source protection is enabled.
+
 ## Create User
 
 Creates a user with a bcrypt-hashed password.
@@ -163,6 +205,48 @@ Possible errors:
 - `401 Unauthorized`: missing or invalid API key.
 - `404 Not Found`: user does not exist.
 
+## List API Keys
+
+Returns API key metadata with pagination. The response never includes key hashes or plaintext API keys.
+
+```http
+GET /api/api-keys?page=1&page_size=20
+```
+
+Query parameters:
+
+- `page`: optional positive integer. Default is `1`.
+- `page_size`: optional positive integer from `1` to `100`. Default is `20`.
+
+Response `200 OK`:
+
+```json
+{
+  "api_keys": [
+    {
+      "id": 1,
+      "name": "bootstrap",
+      "disabled": false,
+      "last_used_at": "2026-05-28T08:21:00.000Z",
+      "created_at": "2026-05-28T08:00:00.000Z",
+      "updated_at": "2026-05-28T08:21:00.000Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "page_size": 20,
+    "total": 1,
+    "total_pages": 1
+  }
+}
+```
+
+Possible errors:
+
+- `400 Bad Request`: invalid pagination values.
+- `401 Unauthorized`: missing or invalid API key.
+- `403 Forbidden`: source IP is not allowed when API source protection is enabled.
+
 ## Create API Key
 
 Creates an API key. Only the SHA-256 hash is stored. The plaintext key is returned once in the `key` field.
@@ -262,4 +346,4 @@ Errors use a stable machine-readable `error` string:
 }
 ```
 
-Common values include `unauthorized`, `source_forbidden`, `invalid_json`, `not_found`, `already_exists`, `last_active_api_key`, `method_not_allowed`, and `internal_error`.
+Common values include `unauthorized`, `source_forbidden`, `invalid_json`, `invalid_page`, `invalid_page_size`, `page_size_too_large`, `not_found`, `already_exists`, `last_active_api_key`, `method_not_allowed`, and `internal_error`.

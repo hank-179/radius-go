@@ -18,6 +18,8 @@ import (
 
 const apiKeyContextKey = "api_key_id"
 const clientIPContextKey = "client_ip"
+const defaultPageSize = 20
+const maxPageSize = 100
 
 type RouterConfig struct {
 	AllowedSources []string
@@ -41,6 +43,13 @@ type apiKeyResponse struct {
 	UpdatedAt  string  `json:"updated_at"`
 }
 
+type paginationResponse struct {
+	Page       int `json:"page"`
+	PageSize   int `json:"page_size"`
+	Total      int `json:"total"`
+	TotalPages int `json:"total_pages"`
+}
+
 func NewRouter(st *store.Store, logger *zap.Logger, cfg RouterConfig) (*gin.Engine, error) {
 	gin.SetMode(gin.ReleaseMode)
 
@@ -62,11 +71,13 @@ func NewRouter(st *store.Store, logger *zap.Logger, cfg RouterConfig) (*gin.Engi
 	api.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+	api.GET("/users", listUsers(st))
 	api.POST("/users", createUser(st))
 	api.PATCH("/users/:username/password", updateUserPassword(st))
 	api.POST("/users/:username/suspend", suspendUser(st))
 	api.DELETE("/users/:username", deleteUser(st))
 
+	api.GET("/api-keys", listAPIKeys(st))
 	api.POST("/api-keys", createAPIKey(st))
 	api.POST("/api-keys/:id/suspend", suspendAPIKey(st))
 	api.DELETE("/api-keys/:id", deleteAPIKey(st))
@@ -304,6 +315,29 @@ func createUser(st *store.Store) gin.HandlerFunc {
 	}
 }
 
+func listUsers(st *store.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		page, ok := parsePagination(c)
+		if !ok {
+			return
+		}
+		username, err := validateUsernameSearch(c.Query("username"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		result, err := st.ListUsers(c.Request.Context(), store.UserListFilter{Username: username}, page)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"users":      toUserResponses(result.Users),
+			"pagination": toPaginationResponse(page, result.Total),
+		})
+	}
+}
+
 func updateUserPassword(st *store.Store) gin.HandlerFunc {
 	type request struct {
 		Password string `json:"password"`
@@ -390,6 +424,24 @@ func createAPIKey(st *store.Store) gin.HandlerFunc {
 	}
 }
 
+func listAPIKeys(st *store.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		page, ok := parsePagination(c)
+		if !ok {
+			return
+		}
+		result, err := st.ListAPIKeys(c.Request.Context(), page)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"api_keys":   toAPIKeyResponses(result.APIKeys),
+			"pagination": toPaginationResponse(page, result.Total),
+		})
+	}
+}
+
 func suspendAPIKey(st *store.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseID(c)
@@ -455,6 +507,35 @@ func parseID(c *gin.Context) (int64, bool) {
 	return id, true
 }
 
+func parsePagination(c *gin.Context) (store.Page, bool) {
+	page, ok := parsePositiveIntQuery(c, "page", 1)
+	if !ok {
+		return store.Page{}, false
+	}
+	pageSize, ok := parsePositiveIntQuery(c, "page_size", defaultPageSize)
+	if !ok {
+		return store.Page{}, false
+	}
+	if pageSize > maxPageSize {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "page_size_too_large"})
+		return store.Page{}, false
+	}
+	return store.Page{Page: page, PageSize: pageSize}, true
+}
+
+func parsePositiveIntQuery(c *gin.Context, name string, fallback int) (int, bool) {
+	value := strings.TrimSpace(c.Query(name))
+	if value == "" {
+		return fallback, true
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_" + name})
+		return 0, false
+	}
+	return parsed, true
+}
+
 func writeStoreError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -478,6 +559,14 @@ func toUserResponse(user *store.User) userResponse {
 	}
 }
 
+func toUserResponses(users []store.User) []userResponse {
+	out := make([]userResponse, 0, len(users))
+	for i := range users {
+		out = append(out, toUserResponse(&users[i]))
+	}
+	return out
+}
+
 func toAPIKeyResponse(apiKey *store.APIKey) apiKeyResponse {
 	var lastUsedAt *string
 	if apiKey.LastUsedAt.Valid {
@@ -493,6 +582,27 @@ func toAPIKeyResponse(apiKey *store.APIKey) apiKeyResponse {
 	}
 }
 
+func toAPIKeyResponses(apiKeys []store.APIKey) []apiKeyResponse {
+	out := make([]apiKeyResponse, 0, len(apiKeys))
+	for i := range apiKeys {
+		out = append(out, toAPIKeyResponse(&apiKeys[i]))
+	}
+	return out
+}
+
+func toPaginationResponse(page store.Page, total int) paginationResponse {
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + page.PageSize - 1) / page.PageSize
+	}
+	return paginationResponse{
+		Page:       page.Page,
+		PageSize:   page.PageSize,
+		Total:      total,
+		TotalPages: totalPages,
+	}
+}
+
 func validateUsername(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -504,6 +614,19 @@ func validateUsername(value string) (string, error) {
 	for _, r := range value {
 		if unicode.IsControl(r) || unicode.IsSpace(r) || r == '/' {
 			return "", errors.New("username_invalid")
+		}
+	}
+	return value, nil
+}
+
+func validateUsernameSearch(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if len(value) > 128 {
+		return "", errors.New("username_search_too_long")
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return "", errors.New("username_search_invalid")
 		}
 	}
 	return value, nil
