@@ -28,7 +28,7 @@ The server stores users and API keys in SQLite, hashes user passwords with bcryp
 
 ## Requirements
 
-- Go 1.25.6.
+- Go 1.25.7.
 - SQLite support through `github.com/mattn/go-sqlite3`, which requires CGO.
 
 ## Build
