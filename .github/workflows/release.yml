@@ -1,0 +1,183 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install CGO dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: Run tests
+        run: go test ./...
+
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            goos: linux
+            goarch: amd64
+            cc: gcc
+            packages: build-essential
+            extension: ""
+            archive: tar.gz
+          - target: linux-arm64
+            goos: linux
+            goarch: arm64
+            cc: aarch64-linux-gnu-gcc
+            packages: gcc-aarch64-linux-gnu
+            extension: ""
+            archive: tar.gz
+          - target: windows-amd64
+            goos: windows
+            goarch: amd64
+            cc: x86_64-w64-mingw32-gcc
+            packages: gcc-mingw-w64-x86-64 zip
+            extension: ".exe"
+            archive: zip
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.packages }}
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CC: ${{ matrix.cc }}
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/package"
+          go build -trimpath -ldflags="-s -w" -o "dist/package/radius-go${{ matrix.extension }}" ./cmd/radius-go
+          cp README.md API.md config.example.yaml "dist/package/"
+
+      - name: Package artifact
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME//\//-}"
+          archive="radius-go_${version}_${{ matrix.target }}.${{ matrix.archive }}"
+          cd dist/package
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            zip -r "../${archive}" .
+          else
+            tar -czf "../${archive}" .
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: radius-go-${{ matrix.target }}
+          path: dist/radius-go_*
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          cp artifacts/* release/
+          cd release
+          sha256sum * > checksums.txt
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" release/* --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" release/* --title "${GITHUB_REF_NAME}" --generate-notes
+          fi
+
+  publish-image:
+    name: Publish Docker Image
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare build metadata
+        run: |
+          echo "IMAGE_NAME=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "GO_VERSION=$(awk '/^go / {print $2}' go.mod)" >> "$GITHUB_ENV"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            GO_VERSION=${{ env.GO_VERSION }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
