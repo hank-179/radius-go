@@ -39,6 +39,35 @@ go test ./...
 go build -o radius-go ./cmd/radius-go
 ```
 
+## Docker
+
+Build the image:
+
+```sh
+docker build -t radius-go:local .
+```
+
+Create and edit a config file before running:
+
+```sh
+cp config.example.yaml config.yaml
+```
+
+Run the container:
+
+```sh
+docker run --rm \
+  --name radius-go \
+  -p 8080:8080/tcp \
+  -p 1812:1812/udp \
+  -v "$PWD/config.yaml:/app/config.yaml:ro" \
+  -v radius-go-data:/app/data \
+  -v radius-go-logs:/app/logs \
+  radius-go:local
+```
+
+The image runs as a non-root user. The default container command reads `/app/config.yaml`; mount your own config there. If you keep the example relative paths, SQLite data is stored under `/app/data` and logs under `/app/logs`.
+
 ## Configuration
 
 Create a working config from the example:
