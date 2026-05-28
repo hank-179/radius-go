@@ -1,5 +1,7 @@
 # radius-go
 
+![radius-go promotional image](assets/image.png)
+
 radius-go is a small RADIUS authentication server written in Go. It is designed for teams that need a simple access-authentication system before a full identity platform is available.
 
 Typical uses include:
