@@ -20,8 +20,9 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	APIAddr    string `yaml:"api_addr"`
-	RadiusAddr string `yaml:"radius_addr"`
+	APIAddr                     string `yaml:"api_addr"`
+	RadiusAddr                  string `yaml:"radius_addr"`
+	RadiusMaxConcurrentRequests int    `yaml:"radius_max_concurrent_requests"`
 }
 
 type APIConfig struct {
@@ -56,8 +57,9 @@ type ClientConfig struct {
 func Default() Config {
 	return Config{
 		Server: ServerConfig{
-			APIAddr:    ":8080",
-			RadiusAddr: ":1812",
+			APIAddr:                     ":8080",
+			RadiusAddr:                  ":1812",
+			RadiusMaxConcurrentRequests: 64,
 		},
 		Database: DatabaseConfig{
 			Path: "data/radius-go.db",
@@ -99,6 +101,9 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Server.RadiusAddr) == "" {
 		return fmt.Errorf("server.radius_addr is required")
+	}
+	if c.Server.RadiusMaxConcurrentRequests <= 0 {
+		return fmt.Errorf("server.radius_max_concurrent_requests must be greater than zero")
 	}
 	if strings.TrimSpace(c.Database.Path) == "" {
 		return fmt.Errorf("database.path is required")

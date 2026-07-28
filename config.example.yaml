@@ -1,6 +1,8 @@
 server:
   api_addr: ":8080"
   radius_addr: ":1812"
+  # Drop new packets while this many RADIUS requests are being processed.
+  radius_max_concurrent_requests: 64
 
 api:
   # Leave empty to disable API source protection.

@@ -77,7 +77,13 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	radiusServer, err := radius.NewServer(cfg.Server.RadiusAddr, cfg.Clients, st, logger.Named("radius"))
+	radiusServer, err := radius.NewServer(
+		cfg.Server.RadiusAddr,
+		cfg.Server.RadiusMaxConcurrentRequests,
+		cfg.Clients,
+		st,
+		logger.Named("radius"),
+	)
 	if err != nil {
 		return err
 	}

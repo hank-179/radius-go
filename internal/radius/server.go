@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -23,13 +24,17 @@ type Client struct {
 }
 
 type Server struct {
-	addr    string
-	clients []Client
-	auth    Authenticator
-	logger  *zap.Logger
+	addr                  string
+	maxConcurrentRequests int
+	clients               []Client
+	auth                  Authenticator
+	logger                *zap.Logger
 }
 
-func NewServer(addr string, clientConfigs []config.ClientConfig, auth Authenticator, logger *zap.Logger) (*Server, error) {
+func NewServer(addr string, maxConcurrentRequests int, clientConfigs []config.ClientConfig, auth Authenticator, logger *zap.Logger) (*Server, error) {
+	if maxConcurrentRequests <= 0 {
+		return nil, errors.New("maximum concurrent RADIUS requests must be greater than zero")
+	}
 	clients := make([]Client, 0, len(clientConfigs))
 	for _, clientConfig := range clientConfigs {
 		_, network, err := net.ParseCIDR(clientConfig.Network)
@@ -43,10 +48,11 @@ func NewServer(addr string, clientConfigs []config.ClientConfig, auth Authentica
 		})
 	}
 	return &Server{
-		addr:    addr,
-		clients: clients,
-		auth:    auth,
-		logger:  logger,
+		addr:                  addr,
+		maxConcurrentRequests: maxConcurrentRequests,
+		clients:               clients,
+		auth:                  auth,
+		logger:                logger,
 	}, nil
 }
 
@@ -72,9 +78,14 @@ func (s *Server) Serve(ctx context.Context, conn *net.UDPConn) error {
 		case <-done:
 		}
 	}()
-	defer close(done)
+	var handlers sync.WaitGroup
+	defer func() {
+		close(done)
+		handlers.Wait()
+	}()
 
 	buf := make([]byte, maxPacketLength)
+	slots := make(chan struct{}, s.maxConcurrentRequests)
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
@@ -87,7 +98,22 @@ func (s *Server) Serve(ctx context.Context, conn *net.UDPConn) error {
 
 		data := make([]byte, n)
 		copy(data, buf[:n])
-		go s.handlePacket(ctx, conn, remoteAddr, data)
+
+		select {
+		case slots <- struct{}{}:
+			handlers.Add(1)
+			go func(remoteAddr *net.UDPAddr, data []byte) {
+				defer handlers.Done()
+				defer func() { <-slots }()
+				s.handlePacket(ctx, conn, remoteAddr, data)
+			}(remoteAddr, data)
+		default:
+			s.logger.Debug(
+				"Dropped RADIUS packet because the concurrency limit was reached",
+				zap.String("remote", remoteAddr.String()),
+				zap.Int("limit", s.maxConcurrentRequests),
+			)
+		}
 	}
 }
 

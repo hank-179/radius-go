@@ -86,6 +86,7 @@ Example:
 server:
   api_addr: ":8080"
   radius_addr: ":1812"
+  radius_max_concurrent_requests: 64
 
 api:
   allowed_sources: []

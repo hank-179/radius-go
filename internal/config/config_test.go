@@ -30,6 +30,15 @@ func TestValidateRejectsInvalidTrustedProxy(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidRadiusConcurrencyLimit(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.Server.RadiusMaxConcurrentRequests = 0
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected a non-positive RADIUS concurrency limit to fail validation")
+	}
+}
+
 func validTestConfig() Config {
 	cfg := Default()
 	cfg.Clients = []ClientConfig{
